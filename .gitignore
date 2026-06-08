@@ -24,3 +24,6 @@ Thumbs.db
 
 # vitest cache
 **/.vite/
+
+# local-only tooling (not part of the product)
+scripts/make-history.ps1
