@@ -13,31 +13,40 @@ const WS_URL = process.env.NEXT_PUBLIC_WS_URL ?? 'ws://localhost:3001/ws';
 
 export default function RemoteBrowserPage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const imgRef = useRef<HTMLImageElement | null>(null);
-  const [urlInput, setUrlInput] = useState('https://google.com');
+  const [urlInput, setUrlInput] = useState('https://duckduckgo.com');
+  
+  const frameCountRef = useRef(0);
   const [frameCount, setFrameCount] = useState(0);
+  const [fps, setFps] = useState(0);
+  const [uptime, setUptime] = useState(0);
+  const rafIdRef = useRef<number>(0);
+  const pendingBitmapRef = useRef<ImageBitmap | null>(null);
 
   const onFrame = useCallback((data: ArrayBuffer) => {
-    const canvas = canvasRef.current;
-    if (!canvas) return;
-
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    if (imgRef.current?.src) {
-      URL.revokeObjectURL(imgRef.current.src);
-    }
-
     const blob = new Blob([data], { type: 'image/jpeg' });
-    const url = URL.createObjectURL(blob);
-    const img = new Image();
-    img.onload = () => {
-      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-      URL.revokeObjectURL(url);
-      setFrameCount((c) => c + 1);
-    };
-    img.src = url;
-    imgRef.current = img;
+    createImageBitmap(blob).then((bitmap) => {
+      pendingBitmapRef.current?.close();
+      pendingBitmapRef.current = bitmap;
+
+      if (!rafIdRef.current) {
+        rafIdRef.current = requestAnimationFrame(() => {
+          rafIdRef.current = 0;
+          const bmp = pendingBitmapRef.current;
+          const canvas = canvasRef.current;
+          if (!bmp || !canvas) return;
+
+          const ctx = canvas.getContext('2d');
+          if (!ctx) return;
+
+          ctx.drawImage(bmp, 0, 0, VIEWPORT_W, VIEWPORT_H);
+          bmp.close();
+          pendingBitmapRef.current = null;
+
+          frameCountRef.current += 1;
+          setFrameCount(frameCountRef.current);
+        });
+      }
+    });
   }, []);
 
   const { status, error, startSession, stopSession, sendInput } = useRemoteBrowser({
@@ -54,6 +63,29 @@ export default function RemoteBrowserPage() {
     prevStatus.current = status;
   }, [status, urlInput, sendInput]);
 
+  useEffect(() => {
+    if (status !== 'streaming') {
+      setFps(0);
+      setUptime(0);
+      return;
+    }
+
+    let lastFrames = frameCountRef.current;
+    const interval = setInterval(() => {
+      setFps(frameCountRef.current - lastFrames);
+      lastFrames = frameCountRef.current;
+      setUptime((u) => u + 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, [status]);
+
+  const formatUptime = (seconds: number) => {
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = (seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  };
+
   const getScaledCoords = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
     const canvas = canvasRef.current!;
     const rect = canvas.getBoundingClientRect();
@@ -69,9 +101,13 @@ export default function RemoteBrowserPage() {
     [status, getScaledCoords, sendInput],
   );
 
+  const lastMouseMoveRef = useRef(0);
   const handleMouseMove = useCallback(
     (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (status !== 'streaming') return;
+      const now = Date.now();
+      if (now - lastMouseMoveRef.current < 32) return; // ~30fps throttle
+      lastMouseMoveRef.current = now;
       const { x, y } = getScaledCoords(e);
       sendInput({ type: 'mousemove', x, y });
     },
@@ -81,7 +117,7 @@ export default function RemoteBrowserPage() {
   const handleWheel = useCallback(
     (e: React.WheelEvent<HTMLCanvasElement>) => {
       if (status !== 'streaming') return;
-      const { x, y } = getScaledCoords(e as any);
+      const { x, y } = getScaledCoords(e as unknown as React.MouseEvent<HTMLCanvasElement>);
       sendInput({ type: 'scroll', x, y, deltaY: e.deltaY });
     },
     [status, getScaledCoords, sendInput],
@@ -90,6 +126,7 @@ export default function RemoteBrowserPage() {
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent<HTMLCanvasElement>) => {
       if (status !== 'streaming') return;
+      if (e.repeat) return; // prevent held-key spam
       e.preventDefault();
       sendInput({ type: 'keydown', key: e.key });
     },
@@ -103,7 +140,8 @@ export default function RemoteBrowserPage() {
 
   useEffect(() => {
     return () => {
-      if (imgRef.current?.src) URL.revokeObjectURL(imgRef.current.src);
+      if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
+      pendingBitmapRef.current?.close();
     };
   }, []);
 
@@ -113,7 +151,7 @@ export default function RemoteBrowserPage() {
   const isError = status === 'error';
 
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center font-sans p-4 lg:p-8 bg-[#f8f9fa]">
+    <div className="min-h-screen flex flex-col items-center justify-center font-sans p-4 pb-32 lg:p-8 lg:pb-32 bg-[#f8f9fa]">
       
       {/* Top Title */}
       <motion.div 
@@ -127,10 +165,10 @@ export default function RemoteBrowserPage() {
       {/* Main Canvas Area */}
       <motion.div 
         layout
-        className="relative w-full max-w-[1400px] bg-white rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] overflow-hidden border border-gray-200/60 flex flex-col items-center"
+        className="relative w-[90vw] max-w-[1500px] bg-white rounded-2xl shadow-[0_20px_60px_-15px_rgba(0,0,0,0.1)] overflow-hidden border border-gray-200/60 flex flex-col items-center"
       >
         {/* Mac Browser Header */}
-        <div className="w-full h-14 bg-[#f1f1f1] border-b border-gray-200/80 flex items-center px-4 relative">
+        <div className="w-full h-14 bg-[#f1f1f1] border-b border-gray-200/80 flex items-center px-4 relative z-10">
           {/* Traffic Lights */}
           <div className="flex gap-2 items-center absolute left-4">
             <div className="w-3 h-3 rounded-full bg-[#ff5f56] border border-[#e0443e] cursor-pointer" onClick={isStreaming || isConnecting ? stopSession : undefined} />
@@ -154,70 +192,115 @@ export default function RemoteBrowserPage() {
           </div>
         </div>
 
-        {/* Browser Content */}
-        <div className="relative w-full aspect-video flex flex-col items-center justify-center bg-white">
-          <AnimatePresence mode="wait">
-            {isIdle && (
-              <motion.div 
-                key="idle"
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.05 }}
-                className="flex flex-col items-center gap-6 text-gray-400 my-auto"
-              >
+        {/* Main Content Area */}
+        <div className="flex w-full">
+          {/* Browser Canvas */}
+          <div className="relative flex-1 aspect-video flex flex-col items-center justify-center bg-white">
+            <AnimatePresence mode="wait">
+              {isIdle && (
                 <motion.div 
-                  animate={{ y: [0, -10, 0] }}
-                  transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
+                  key="idle"
+                  initial={{ opacity: 0, scale: 0.95 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 1.05 }}
+                  className="flex flex-col items-center gap-6 text-gray-400 my-auto"
                 >
-                  <Globe className="w-16 h-16 text-gray-200 stroke-[1]" />
+                  <motion.div 
+                    animate={{ y: [0, -10, 0] }}
+                    transition={{ repeat: Infinity, duration: 4, ease: "easeInOut" }}
+                  >
+                    <Globe className="w-16 h-16 text-gray-200 stroke-[1]" />
+                  </motion.div>
+                  <p className="text-sm font-medium tracking-widest uppercase text-gray-400">Ready</p>
                 </motion.div>
-                <p className="text-sm font-medium tracking-widest uppercase text-gray-400">Ready</p>
-              </motion.div>
-            )}
+              )}
 
-            {isConnecting && (
-              <motion.div 
-                key="connecting"
-                initial={{ opacity: 0, scale: 0.9 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 1.1 }}
-                className="flex flex-col items-center gap-6 text-gray-500 my-auto"
-              >
-                <Loader2 className="w-10 h-10 animate-spin text-blue-500 stroke-[1.5]" />
-                <p className="text-sm font-medium tracking-wide">Connecting to remote environment...</p>
-              </motion.div>
-            )}
+              {isConnecting && (
+                <motion.div 
+                  key="connecting"
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  exit={{ opacity: 0, scale: 1.1 }}
+                  className="flex flex-col items-center gap-6 text-gray-500 my-auto"
+                >
+                  <Loader2 className="w-10 h-10 animate-spin text-blue-500 stroke-[1.5]" />
+                  <p className="text-sm font-medium tracking-wide">Connecting to remote environment...</p>
+                </motion.div>
+              )}
 
-            {isError && (
-              <motion.div 
-                key="error"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                exit={{ opacity: 0 }}
-                className="flex flex-col items-center gap-4 text-red-500 my-auto"
-              >
-                <p className="text-sm font-semibold tracking-wide">Connection failed: {error}</p>
-              </motion.div>
-            )}
+              {isError && (
+                <motion.div 
+                  key="error"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  className="flex flex-col items-center gap-4 text-red-500 my-auto"
+                >
+                  <p className="text-sm font-semibold tracking-wide">Connection failed: {error}</p>
+                </motion.div>
+              )}
 
-            {isStreaming && (
-              <motion.canvas
-                key="canvas"
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                transition={{ duration: 0.8, ease: "easeOut" }}
-                ref={canvasRef}
-                width={VIEWPORT_W}
-                height={VIEWPORT_H}
-                className="absolute inset-0 w-full h-full object-contain outline-none cursor-crosshair bg-black"
-                tabIndex={0}
-                onClick={handleClick}
-                onMouseMove={handleMouseMove}
-                onWheel={handleWheel}
-                onKeyDown={handleKeyDown}
-              />
-            )}
-          </AnimatePresence>
+              {isStreaming && (
+                <motion.div
+                  key="canvas"
+                  initial={{ opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  transition={{ duration: 0.8, ease: "easeOut" }}
+                  className="absolute inset-0 w-full h-full"
+                >
+                  <canvas
+                    ref={canvasRef}
+                    width={VIEWPORT_W}
+                    height={VIEWPORT_H}
+                    className="w-full h-full object-contain outline-none cursor-crosshair bg-black"
+                    tabIndex={0}
+                    onClick={handleClick}
+                    onMouseMove={handleMouseMove}
+                    onWheel={handleWheel}
+                    onKeyDown={handleKeyDown}
+                  />
+                </motion.div>
+              )}
+            </AnimatePresence>
+          </div>
+
+          {/* Sidebar (Metrics) */}
+          <div className="bg-[#fcfcfc] w-[220px] border-l border-gray-200/80 flex flex-col px-6 py-8 text-[10px] text-gray-500 font-mono tracking-wider uppercase z-10 shrink-0 gap-6 overflow-hidden whitespace-nowrap">
+            <div className="text-xs font-bold text-gray-800 mb-2">Telemetry</div>
+            
+            <div className="flex flex-col gap-1">
+              <span className="text-gray-400">FPS</span>
+              <span className="text-xl font-sans font-medium text-gray-800 tracking-normal">
+                {isStreaming ? fps : '-'}
+              </span>
+            </div>
+            
+            <div className="flex flex-col gap-1">
+              <span className="text-gray-400">Frames</span>
+              <span className="text-xl font-sans font-medium text-gray-800 tracking-normal">
+                {isStreaming ? frameCount : '-'}
+              </span>
+            </div>
+            
+            <div className="flex flex-col gap-1">
+              <span className="text-gray-400">Uptime</span>
+              <span className="text-xl font-sans font-medium text-gray-800 tracking-normal">
+                {isStreaming ? formatUptime(uptime) : '--:--'}
+              </span>
+            </div>
+
+            <div className="w-full h-px bg-gray-200 my-2" />
+
+            <div className="flex flex-col gap-1">
+              <span className="text-gray-400">Resolution</span>
+              <span className="text-sm text-gray-800">1280x720</span>
+            </div>
+            
+            <div className="flex flex-col gap-1">
+              <span className="text-gray-400">Quality</span>
+              <span className="text-sm text-gray-800">75% JPEG</span>
+            </div>
+          </div>
         </div>
       </motion.div>
 

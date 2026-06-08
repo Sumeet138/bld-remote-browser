@@ -69,6 +69,7 @@ app.post('/session/start', async (_req, res) => {
 /** DELETE /session/stop — force-kills active container */
 app.delete('/session/stop', async (_req, res) => {
   try {
+    await bridge.disconnect();
     await sessionManager.killSession();
     log.info('session stopped via REST');
     res.status(204).send();
@@ -127,6 +128,24 @@ if (process.env.NODE_ENV !== 'test') {
       process.exit(1);
     }
   });
+
+  // Kill orphaned containers from previous crashed backends
+  async function cleanupOrphanContainers() {
+    try {
+      const docker = new (await import('dockerode')).default();
+      const containers = await docker.listContainers({ all: false });
+      for (const c of containers) {
+        if (c.Image === config.docker.chromiumImage || c.Image.startsWith(config.docker.chromiumImage + ':')) {
+          log.warn({ containerId: c.Id.slice(0, 12) }, 'killing orphaned container from previous run');
+          await docker.getContainer(c.Id).stop().catch(() => {});
+        }
+      }
+    } catch (err) {
+      log.debug({ err }, 'orphan cleanup skipped');
+    }
+  }
+
+  cleanupOrphanContainers();
 
   server.listen(config.port, () => {
     log.info({ port: config.port }, 'server listening');

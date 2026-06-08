@@ -43,6 +43,13 @@ export function useRemoteBrowser({
   const wsRef = useRef<WebSocket | null>(null);
 
   const startSession = useCallback(async () => {
+    // Close any existing WebSocket before starting a new session
+    if (wsRef.current) {
+      wsRef.current.onclose = null; // prevent status change from old socket
+      wsRef.current.close();
+      wsRef.current = null;
+    }
+
     setStatus('connecting');
     setError(null);
 

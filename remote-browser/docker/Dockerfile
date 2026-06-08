@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y \
     chromium \
     socat \
     curl \
+    xvfb \
     fonts-liberation \
     fonts-noto-color-emoji \
     libatk-bridge2.0-0 \

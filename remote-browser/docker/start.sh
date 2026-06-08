@@ -13,9 +13,13 @@
 
 set -e
 
-# Start Chromium in background on internal port (not exposed directly)
+# Start Xvfb (virtual display) so Chrome runs in headed mode — undetectable as headless
+Xvfb :99 -screen 0 1280x720x24 -ac -nolisten tcp &
+export DISPLAY=:99
+sleep 0.5
+
+# Start Chromium in background on internal port (NOT headless — uses Xvfb instead)
 chromium \
-  --headless=new \
   --remote-debugging-port=9223 \
   --remote-debugging-address=127.0.0.1 \
   --no-sandbox \
@@ -23,6 +27,12 @@ chromium \
   --disable-gpu \
   --window-size=1280,720 \
   --user-data-dir=/home/chromium/data \
+  --disable-blink-features=AutomationControlled \
+  --disable-features=Translate \
+  --disable-infobars \
+  --lang=en-US,en \
+  --user-agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36" \
+  --start-maximized \
   &
 
 CHROMIUM_PID=$!
