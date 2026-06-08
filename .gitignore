@@ -1,0 +1,26 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+.next/
+out/
+
+# env
+.env
+.env.local
+.env*.local
+
+# logs & coverage
+*.log
+coverage/
+.nyc_output/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# vitest cache
+**/.vite/
